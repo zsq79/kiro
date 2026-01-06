@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Token Dashboard - Kiro2API</title>
+    <link rel="icon" type="image/jpeg" href="/static/favicon.jpg">
+    <link rel="stylesheet" href="/static/css/dashboard.css?v=20251228v1">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔐 KIRO Token Dashboard</h1>
+            <p>实时监控Token池状态和使用情况</p>
+        </div>
+
+        <div class="main-tabs">
+            <button class="main-tab-btn active" data-tab="tokens">📊 Token管理</button>
+            <button class="main-tab-btn" data-tab="settings">⚙️ 系统设置</button>
+        </div>
+
+        <!-- Token管理标签页 -->
+        <div class="main-tab-content active" id="tokens-tab">
+        <div class="controls">
+            <button class="refresh-btn">
+                🔄 手动刷新
+            </button>
+            <button class="reload-config-btn">
+                ➕ 添加Token
+            </button>
+            <button class="export-config-btn">
+                📥 导出配置
+            </button>
+            <button class="batch-refresh-btn" onclick="dashboard.batchRefreshTokens()">
+                🔃 刷新全部Token
+            </button>
+            <button class="cleanup-btn" onclick="dashboard.cleanupInvalidTokens()">
+                🧹 清理失效
+            </button>
+            <div class="auto-refresh">
+                <span>自动刷新</span>
+                <div class="switch"></div>
+            </div>
+        </div>
+        
+        <div class="status-bar">
+            <div class="status-item">
+                <span class="status-label">总Token数</span>
+                <span class="status-value" id="totalTokens">-</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">可用Token</span>
+                <span class="status-value" id="activeTokens">-</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">总剩余次数</span>
+                <span class="status-value" id="totalRemaining">-</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">今日请求</span>
+                <span class="status-value" id="todayRequests">-</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">最后更新</span>
+                <span class="status-value" id="lastUpdate">-</span>
+            </div>
+        </div>
+
+        <!-- Token 使用统计图表 -->
+        <div class="chart-card">
+            <div class="chart-header">
+                <h3>📊 Token 使用统计（最近24小时）</h3>
+                <div class="chart-legend">
+                    <span class="legend-item input">● Input Tokens</span>
+                    <span class="legend-item output">● Output Tokens</span>
+                </div>
+            </div>
+            <div class="chart-container">
+                <canvas id="tokenChart"></canvas>
+            </div>
+            <div class="chart-summary">
+                <div class="summary-item">
+                    <span class="summary-label">今日 Input</span>
+                    <span class="summary-value" id="todayInput">-</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-label">今日 Output</span>
+                    <span class="summary-value" id="todayOutput">-</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="main-card">
+            <div class="table-container">
+                <table class="token-table">
+                    <thead>
+                        <tr>
+                            <th>用户信息</th>
+                            <th>剩余/状态</th>
+                            <th>过期时间</th>
+                            <th>最后使用</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tokenTableBody">
+                        <tr>
+                            <td colspan="5" class="loading">
+                                <div class="spinner"></div>
+                                正在加载Token数据...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- 移动端卡片视图 -->
+            <div class="token-cards" id="tokenCards"></div>
+        </div>
+        </div>
+        <!-- Token管理标签页结束 -->
+
+        <!-- 系统设置标签页 -->
+        <div class="main-tab-content" id="settings-tab">
+            <div class="settings-container">
+                <!-- 认证设置 - 默认展开 -->
+                <div class="settings-section collapsible open">
+                    <div class="section-header" onclick="toggleSection(this)">
+                        <h3>🔐 认证设置</h3>
+                        <span class="collapse-icon">▼</span>
+                    </div>
+                    <div class="section-content">
+                        <div class="setting-item">
+                            <label>管理员Token (ADMIN_TOKEN)</label>
+                            <div class="password-input-wrapper">
+                                <input type="password" id="adminToken" placeholder="Dashboard访问密码">
+                                <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('adminToken')">
+                                    👁️
+                                </button>
+                            </div>
+                            <small>⚠️ 修改后需要重新登录Dashboard！</small>
+                        </div>
+                        <div class="setting-item">
+                            <label>客户端认证Token (KIRO_CLIENT_TOKEN)</label>
+                            <div class="password-input-wrapper">
+                                <input type="password" id="clientToken" placeholder="用于API访问的Bearer Token">
+                                <button type="button" class="toggle-password-btn" onclick="togglePasswordVisibility('clientToken')">
+                                    👁️
+                                </button>
+                            </div>
+                            <small>⚠️ 修改后立即生效！请使用新密码访问API</small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 隐身模式设置 - 默认展开 -->
+                <div class="settings-section collapsible open">
+                    <div class="section-header" onclick="toggleSection(this)">
+                        <h3>🎭 隐身模式设置</h3>
+                        <span class="collapse-icon">▼</span>
+                    </div>
+                    <div class="section-content">
+                        <div class="setting-item">
+                            <label>启用隐身模式</label>
+                            <select id="stealthMode">
+                                <option value="true">启用（推荐）</option>
+                                <option value="false">禁用</option>
+                            </select>
+                            <small>使用真实 Kiro IDE v0.8.0 请求头格式</small>
+                        </div>
+                        <div class="setting-item">
+                            <label>请求头策略</label>
+                            <select id="headerStrategy">
+                                <option value="real_simulation">真实Kiro IDE格式（推荐）</option>
+                                <option value="random">随机生成（旧版）</option>
+                            </select>
+                            <small>真实格式：统一使用 v0.8.0 最新版本</small>
+                        </div>
+                        <div class="setting-item">
+                            <label>HTTP/2 模式</label>
+                            <select id="http2Mode">
+                                <option value="auto">自动（推荐）</option>
+                                <option value="force">强制启用</option>
+                                <option value="disable">禁用</option>
+                            </select>
+                            <small>自动模式会随机选择 HTTP/2 或 HTTP/1.1</small>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 高级设置 - 默认折叠 -->
+                <div class="settings-section collapsible">
+                    <div class="section-header" onclick="toggleSection(this)">
+                        <h3>⚙️ 高级设置</h3>
+                        <span class="collapse-icon">▶</span>
+                    </div>
+                    <div class="section-content">
+                        <div class="setting-item">
+                            <label>运行模式 (GIN_MODE)</label>
+                            <select id="ginMode">
+                                <option value="release">生产模式</option>
+                                <option value="debug">调试模式</option>
+                                <option value="test">测试模式</option>
+                            </select>
+                            <small>调试模式会输出更多日志</small>
+                        </div>
+                        <div class="setting-item">
+                            <label>日志级别</label>
+                            <select id="logLevel">
+                                <option value="debug">调试</option>
+                                <option value="info">信息</option>
+                                <option value="warn">警告</option>
+                                <option value="error">错误</option>
+                            </select>
+                        </div>
+                        <div class="setting-item">
+                            <label>日志格式</label>
+                            <select id="logFormat">
+                                <option value="json">JSON格式</option>
+                                <option value="text">文本格式</option>
+                            </select>
+                        </div>
+                        <div class="setting-item">
+                            <label>控制台输出</label>
+                            <select id="logConsole">
+                                <option value="true">启用</option>
+                                <option value="false">禁用</option>
+                            </select>
+                        </div>
+                        <div class="setting-item">
+                            <label>工具描述最大长度</label>
+                            <input type="number" id="maxToolLength" placeholder="10000" min="1000" max="100000">
+                            <small>限制tool description字段长度，防止超长内容</small>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-actions">
+                    <button class="save-settings-btn">💾 保存配置</button>
+                    <button class="reset-settings-btn">🔄 重置为默认值</button>
+                </div>
+
+                <div id="settingsStatus" class="settings-status"></div>
+            </div>
+        </div>
+        <!-- 系统设置标签页结束 -->
+    </div>
+
+    <!-- Token配置更新模态框 -->
+    <div id="reloadModal" class="config-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>➕ 添加Token配置</h2>
+                <span class="modal-close" onclick="dashboard.closeReloadModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="modal-tabs">
+                    <button class="modal-tab-btn active" data-tab="file">📁 文件上传</button>
+                    <button class="modal-tab-btn" data-tab="json">📝 JSON配置</button>
+                </div>
+                
+                <!-- JSON配置Tab -->
+                <div class="modal-tab-content" id="json-tab">
+                    <p class="hint">粘贴要添加的token配置JSON（数组格式，会添加到现有token中）</p>
+                    <textarea id="configJson" placeholder='[
+  {
+    "auth": "Social",
+    "refreshToken": "your-token-here"
+  },
+  {
+    "auth": "IdC",
+    "refreshToken": "your-token",
+    "clientId": "your-client-id",
+    "clientSecret": "your-client-secret"
+  }
+]'></textarea>
+                    <button class="submit-btn" id="submitJson">添加Token</button>
+                </div>
+                
+                <!-- 文件上传Tab -->
+                <div class="modal-tab-content active" id="file-tab">
+                    <p class="hint">支持三种方式：</p>
+                    <ul class="hint-list">
+                        <li>📄 标准配置文件（JSON数组格式）</li>
+                        <li>📁 Kiro token 文件夹（支持多文件拖拽，自动识别并合并）</li>
+                        <li>🔗 自动匹配 kiro-auth-token.json + client 配置文件</li>
+                    </ul>
+                    <div class="file-upload">
+                        <input type="file" id="configFile" accept=".json" multiple>
+                        <label for="configFile" class="file-label">
+                            <span class="file-icon">📁</span>
+                            <span class="file-text">点击选择文件或拖拽多个文件到此处</span>
+                        </label>
+                        <div id="fileName" class="file-name"></div>
+                    </div>
+                    <button class="submit-btn" id="submitFile">智能解析并添加</button>
+                </div>
+                
+                <div id="reloadStatus" class="reload-status"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 确认弹窗 -->
+    <div id="confirmModal" class="config-modal confirm-modal">
+        <div class="modal-content confirm-content">
+            <div class="confirm-icon" id="confirmIcon">⚠️</div>
+            <h3 id="confirmTitle">确认操作</h3>
+            <p id="confirmMessage">确定要执行此操作吗？</p>
+            <div class="confirm-actions">
+                <button class="confirm-btn cancel" onclick="dashboard.closeConfirmModal()">取消</button>
+                <button class="confirm-btn danger" id="confirmOkBtn">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/dashboard.js?v=20251031v14"></script>
+    <script>
+        // 折叠面板切换
+        function toggleSection(header) {
+            const section = header.parentElement;
+            section.classList.toggle('open');
+        }
+        
+        // 密码可见性切换
+        function togglePasswordVisibility(inputId) {
+            const input = document.getElementById(inputId);
+            if (input) {
+                input.type = input.type === 'password' ? 'text' : 'password';
+            }
+        }
+    </script>
+</body>
+</html>

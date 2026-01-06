@@ -1,0 +1,185 @@
+package auth
+
+import (
+	"crypto/rand"
+	"fmt"
+	"io"
+	"kiro2api/logger"
+	"kiro2api/types"
+	"kiro2api/utils"
+	"net/http"
+	"net/url"
+)
+
+// kiroVersionInfo KiroIDE 版本信息
+type kiroVersionInfo struct {
+	version string
+	hash    string
+	osVer   string
+	nodeVer string
+}
+
+// kiroVersion 固定使用 0.8.0 最新版本（符合真实用户分布）
+// 原因：使用最新正式版本最安全，大部分真实用户都使用最新版本
+var kiroVersion = kiroVersionInfo{
+	version: "0.8.0",
+	hash:    "0c03d62071d624e210c37b2a555b73f9b2821c945e8b73a55a7fc17461e70b5f",
+	osVer:   "10.0.26100",
+	nodeVer: "22.21.1",
+}
+
+// UsageLimitsChecker 使用限制检查器 (遵循SRP原则)
+type UsageLimitsChecker struct {
+	httpClient *http.Client
+}
+
+// NewUsageLimitsChecker 创建使用限制检查器
+func NewUsageLimitsChecker() *UsageLimitsChecker {
+	return &UsageLimitsChecker{
+		httpClient: utils.SharedHTTPClient,
+	}
+}
+
+// CheckUsageLimits 检���token的使用限制 (基于token.md API规范)
+func (c *UsageLimitsChecker) CheckUsageLimits(token types.TokenInfo) (*types.UsageLimits, error) {
+	// 构建请求URL (与真实 KiroIDE 0.8.0 完全一致)
+	baseURL := "https://q.us-east-1.amazonaws.com/getUsageLimits"
+	params := url.Values{}
+	params.Add("isEmailRequired", "true")
+	params.Add("origin", "AI_EDITOR")
+	params.Add("resourceType", "AGENTIC_REQUEST")
+
+	requestURL := fmt.Sprintf("%s?%s", baseURL, params.Encode())
+
+	// 创建HTTP请求
+	req, err := http.NewRequest("GET", requestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建使用限制检查请求失败: %v", err)
+	}
+
+	// 根据 token 获取固定版本（同一token始终使用同一版本，模拟真实用户）
+	ver := getKiroVersionForToken(token)
+	kiroIdentifier := fmt.Sprintf("KiroIDE-%s-%s", ver.version, ver.hash)
+
+	// 设置请求头 (与真实 KiroIDE 0.8.0 完全一致)
+	req.Header.Set("x-amz-user-agent", fmt.Sprintf("aws-sdk-js/1.0.27 %s", kiroIdentifier))
+	req.Header.Set("user-agent", fmt.Sprintf("aws-sdk-js/1.0.27 ua/2.1 os/win32#%s lang/js md/nodejs#%s api/codewhispererstreaming#1.0.27 m/E %s", ver.osVer, ver.nodeVer, kiroIdentifier))
+	req.Header.Set("host", "q.us-east-1.amazonaws.com")
+	req.Header.Set("amz-sdk-invocation-id", generateInvocationID())
+	req.Header.Set("amz-sdk-request", "attempt=1; max=1")
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token.AccessToken))
+	req.Header.Set("Connection", "close")
+
+	// 发送请求
+	logger.Debug("发送使用限制检查请求",
+		logger.String("url", requestURL),
+		logger.String("token_preview", token.AccessToken[:20]+"..."))
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("使用限制检查请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 读取响应
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("读取使用限制响应失败: %v", err)
+	}
+
+	logger.Debug("使用限制API响应",
+		logger.Int("status_code", resp.StatusCode),
+		logger.String("response_body", string(body)))
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("使用限制检查失败: 状态码 %d, 响应: %s", resp.StatusCode, string(body))
+	}
+
+	// 解析响应
+	var usageLimits types.UsageLimits
+	if err := utils.SafeUnmarshal(body, &usageLimits); err != nil {
+		return nil, fmt.Errorf("解析使用限制响应失败: %v", err)
+	}
+
+	// 记录关键信息
+	c.logUsageLimits(&usageLimits)
+
+	return &usageLimits, nil
+}
+
+// logUsageLimits 记录使用限制的关键信息
+func (c *UsageLimitsChecker) logUsageLimits(limits *types.UsageLimits) {
+	for _, breakdown := range limits.UsageBreakdownList {
+		if breakdown.ResourceType == "CREDIT" {
+			// 计算可用次数 (使用浮点精度数据)
+			var totalLimit float64
+			var totalUsed float64
+
+			// 基础额度
+			baseLimit := breakdown.UsageLimitWithPrecision
+			baseUsed := breakdown.CurrentUsageWithPrecision
+			totalLimit += baseLimit
+			totalUsed += baseUsed
+
+			// 免费试用额度
+			var freeTrialLimit float64
+			var freeTrialUsed float64
+			if breakdown.FreeTrialInfo != nil && breakdown.FreeTrialInfo.FreeTrialStatus == "ACTIVE" {
+				freeTrialLimit = breakdown.FreeTrialInfo.UsageLimitWithPrecision
+				freeTrialUsed = breakdown.FreeTrialInfo.CurrentUsageWithPrecision
+				totalLimit += freeTrialLimit
+				totalUsed += freeTrialUsed
+			}
+
+			available := totalLimit - totalUsed
+
+			logger.Info("CREDIT使用状态",
+				logger.String("resource_type", breakdown.ResourceType),
+				logger.Float64("total_limit", totalLimit),
+				logger.Float64("total_used", totalUsed),
+				logger.Float64("available", available),
+				logger.Float64("base_limit", baseLimit),
+				logger.Float64("base_used", baseUsed),
+				logger.Float64("free_trial_limit", freeTrialLimit),
+				logger.Float64("free_trial_used", freeTrialUsed),
+				logger.String("free_trial_status", func() string {
+					if breakdown.FreeTrialInfo != nil {
+						return breakdown.FreeTrialInfo.FreeTrialStatus
+					}
+					return "NONE"
+				}()))
+
+			if available <= 1 {
+				logger.Warn("CREDIT使用量即将耗尽",
+					logger.Float64("remaining", available),
+					logger.String("recommendation", "考虑切换到其他token"))
+			}
+
+			break
+		}
+	}
+
+	// 记录订阅信息
+	logger.Debug("订阅信息",
+		logger.String("subscription_type", limits.SubscriptionInfo.Type),
+		logger.String("subscription_title", limits.SubscriptionInfo.SubscriptionTitle),
+		logger.String("user_email", limits.UserInfo.Email))
+}
+
+func getKiroVersionForToken(token types.TokenInfo) kiroVersionInfo {
+	return kiroVersion
+}
+
+// generateInvocationID 生成请求ID (UUID v4 格式，与真实 KiroIDE 一致)
+func generateInvocationID() string {
+	// 生成 16 字节随机数据用于 UUID v4
+	b := make([]byte, 16)
+	rand.Read(b)
+
+	// 设置 UUID v4 的版本和变体位
+	b[6] = (b[6] & 0x0f) | 0x40 // Version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // Variant 10
+
+	// 格式化为标准 UUID: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
