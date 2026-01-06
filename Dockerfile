@@ -2,17 +2,19 @@
 
 FROM golang:1.24-alpine AS builder
 
-RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev
+RUN apk add --no-cache git ca-certificates tzdata gcc musl-dev g++
 
 WORKDIR /app
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download && go mod verify
 
 COPY . .
 
 ENV CGO_ENABLED=1
-RUN go build -ldflags="-s -w" -o kiro2api ./cmd/kiro2api
+ENV GOOS=linux
+ENV GOARCH=amd64
+RUN go build -v -ldflags="-s -w" -o kiro2api ./cmd/kiro2api
 
 # 运行阶段
 FROM alpine:3.19
